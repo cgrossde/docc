@@ -145,23 +145,26 @@ docc ui ./unsorted         # or specify a folder
 docc ui -p 8080            # custom port (default: 3141)
 ```
 
-The UI shows a PDF preview on the left and classification controls on the right. Each PDF gets top-3 ranked folder suggestions. You can navigate freely between PDFs, go back to already-moved documents, and see where they were filed.
+The UI shows a PDF preview on the left and classification controls on the right. Each PDF gets top-4 ranked folder suggestions with confidence scores. If a near-duplicate of an already-filed document is detected, a warning appears above the suggestions with options to compare side-by-side or delete the inbox copy. The file list for each suggested folder is interactive — clicking any file opens a side-by-side compare view against the inbox PDF. You can navigate freely between PDFs, go back to already-handled documents, and see where they were filed. All actions are logged to the terminal.
 
 **Keyboard shortcuts:**
 
 | Key | Action |
 |-----|--------|
 | `↑` / `↓` | Change selected suggestion (extends into folder search) |
-| `1`-`3` | Pick suggestion and move immediately |
-| `4` | Open folder search to specify a custom folder |
+| `1`-`4` | Pick suggestion and move immediately |
+| `5` | Open folder search to specify a custom folder |
 | `Enter` | Move to current selection |
 | `←` / `→` | Navigate between PDFs |
 | `s` | Skip to next PDF |
 | `o` | Open selected folder in Finder |
 | `Tab` | Toggle focus on rename field |
-| `Esc` | Return from folder search to suggestions |
+| `Esc` | Return from folder search / exit compare view |
+| hold `i` | Show per-method detail (embedding similarity, ranks) |
+| `c` | Compare with duplicate (when duplicate detected) |
+| `d` | Delete from inbox (when duplicate detected or in compare view) |
 
-The folder search supports multi-word queries (e.g., "Steuer 2024" matches folders containing both words). Files can be renamed before moving; `.pdf` is auto-appended if missing. A toast notification confirms each move or skip.
+The folder search supports multi-word queries (e.g., "Steuer 2024" matches folders containing both words). Files can be renamed before moving; `.pdf` is auto-appended if missing. Toast notifications confirm moves (green), skips (yellow), and deletes (red).
 
 ### Reset
 

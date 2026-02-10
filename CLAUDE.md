@@ -33,10 +33,10 @@ lib/
   pdf.js             PDF text extraction (unpdf), suppresses PDF.js warnings
   embedder.js        Ollama REST API client, auto-truncates on context overflow
   bayes.js           Naive Bayes with EN+DE stopwords, Unicode-aware tokenizer
-  vectors.js         Cosine similarity, centroid math, leave-one-out adjustment
+  vectors.js         Cosine similarity, centroid math, leave-one-out adjustment, duplicate detection
   classifier.js      RRF score fusion, returns ranked results with per-method detail
   folders.js         Recursive folder scanner, skips root-level PDFs
-  ui.js              Web UI server + inline SPA (classification, navigation, folder search, keyboard-driven)
+  ui.js              Web UI server + inline SPA (classification, duplicate detection, compare view, keyboard-driven)
 data/
   docc.db            SQLite database (created at runtime, gitignored)
 ```
@@ -56,6 +56,11 @@ data/
 - **PDF.js warnings suppressed** — `lib/pdf.js` filters font/glyph/cMap warnings during extraction
 - **Embeddings stored as blobs** — `Float64Array` buffers in SQLite (768 doubles = 6,144 bytes each)
 - **RRF k=5** — tuned for small category counts (10–50 folders), not the web-search default of k=60
+- **Confidence scoring** — RRF rank score normalized against theoretical max, then scaled by embedding cosine similarity so poor fits show low percentages even when ranked #1
+- **Duplicate detection** — `findDuplicates()` in vectors.js compares inbox PDF embedding against all stored docs; threshold 0.985 cosine similarity catches OCR re-scans. Shown as non-blocking hint above suggestions.
+- **Configurable suggestion count** — `NUM_SUGGESTIONS` constant in the SPA (currently 4); shortcuts, fuzzy-key, and UI adapt dynamically
+- **Compare view** — side-by-side PDF comparison (inbox left, existing right) from duplicate warnings or by clicking any file in the folder file list
+- **Console logging** — all user actions (classify, move, skip, delete, duplicate detection) logged to the terminal for audit
 - **Config in meta table** — `root` (doc directory) and `inbox` (unclassified PDFs) stored as meta keys; `reset` clears model but preserves config
 - **`learn` and `ui` use stored paths** — `learn` falls back to stored `root`, `ui` falls back to stored `inbox` then cwd
 

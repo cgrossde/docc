@@ -15,10 +15,10 @@ lib/
   pdf.js             PDF text extraction
   embedder.js        Ollama REST API client
   bayes.js           Naive Bayes classifier
-  vectors.js         Cosine similarity, centroid math
+  vectors.js         Cosine similarity, centroid math, duplicate detection
   classifier.js      Score fusion orchestrator
   folders.js         Recursive folder scanner
-  ui.js              Web UI server + inline SPA for interactive classification
+  ui.js              Web UI server + inline SPA (classification, duplicate detection, compare view)
 data/
   docc.db            SQLite database (created at runtime, gitignored)
 ```
@@ -64,11 +64,19 @@ The two rankings are combined using RRF, a standard rank-fusion method:
 RRF_score(folder) = 1/(k + rank_cosine) + 1/(k + rank_bayes)
 ```
 
-`k = 5` (tuned for small category counts of 10–50 folders; the web-search default of k=60 is too flat at this scale). The top 5 results are normalized so scores sum to 1.0, giving interpretable confidence values.
+`k = 5` (tuned for small category counts of 10–50 folders; the web-search default of k=60 is too flat at this scale).
 
 RRF is rank-based rather than score-based, so it doesn't need calibration between the very different score scales of cosine similarity (0–1) and log-probabilities (large negative numbers).
 
-### 4. Leave-One-Out Testing
+**Confidence scoring:** Each result's RRF score is normalized against the theoretical maximum (rank #1 in both methods), then multiplied by the result's embedding cosine similarity. This injects an absolute confidence signal — a poor semantic fit shows a low percentage even when ranked first. Per-method detail (embedding similarity, embedding rank, Bayes rank) is also returned for each result.
+
+### 4. Duplicate Detection
+
+When classifying via the web UI, the inbox PDF's embedding (already computed for classification) is compared against all stored document embeddings using cosine similarity. Documents exceeding a **0.985 threshold** are flagged as likely duplicates — this catches OCR re-scans (which typically score 0.99+) while avoiding false positives from merely topically-similar documents.
+
+Duplicates appear as a non-blocking hint above the classification suggestions. The user can compare documents side-by-side or delete the inbox copy directly.
+
+### 5. Leave-One-Out Testing
 
 The `test` command evaluates accuracy without a separate test set. For each document:
 
@@ -94,20 +102,27 @@ Changing the root path when a learned model exists triggers a confirmation promp
 
 **Layout:** PDF preview (left, 60%) + control pane (right, 40%) + full-width keyboard shortcut bar (bottom). Navigation buttons and progress counter live in the header bar.
 
-**Classification flow:** Each PDF is classified against the learned model, showing the top 3 suggestions ranked by RRF score. The user can pick a suggestion (keys 1-3, arrow selection + Enter), or press 4 / arrow-down past suggestion 3 to open a folder search with multi-word AND matching. Files can be renamed before moving (`.pdf` auto-appended).
+**Classification flow:** Each PDF is classified against the learned model, showing the top N suggestions (configurable via `NUM_SUGGESTIONS`, default 4) ranked by confidence score. If a near-duplicate is detected (cosine similarity >= 0.985), a warning with compare/delete actions appears above the suggestions as a non-blocking hint. The user can pick a suggestion (keys 1-N, arrow selection + Enter), or press N+1 / arrow-down past the last suggestion to open a folder search with multi-word AND matching. Files can be renamed before moving (`.pdf` auto-appended). Holding `i` shows per-method detail (embedding similarity, embedding rank, Bayes rank) instead of the combined confidence score.
 
-**State model:** The PDF list is fetched once at init. A `movedMap` tracks which files have been moved and where (folder + final name). Navigation is free — users can go back to already-moved documents to see where they were filed and open the destination folder. Toast notifications confirm moves (green) and skips (yellow).
+**Compare view:** A side-by-side PDF comparison with the inbox document on the left and the existing document on the right. Triggered by: (a) pressing `c` on a duplicate warning, or (b) clicking any file row in the folder file list. `Esc` exits back to normal view, `d` deletes the inbox copy.
+
+**State model:** The PDF list is fetched once at init. A `movedMap` tracks moved files and a `deletedSet` tracks deleted files. Navigation is free — users can go back to already-handled documents. Toast notifications confirm moves (green), skips (yellow), and deletes (red).
+
+**Console logging:** All user actions are logged to the terminal — classify results (top folder + confidence), duplicate detections, moves (with rename if applicable), skips, and deletes. This provides an audit trail during batch classification sessions.
 
 **API endpoints:**
 
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /api/pdfs` | List PDFs in inbox |
-| `GET /api/pdf/:name` | Serve raw PDF for preview |
+| `GET /api/pdf/:name` | Serve raw PDF from inbox for preview |
+| `GET /api/doc-pdf?path=X` | Serve PDF from root (for compare view) |
 | `GET /api/folders` | All known folder categories |
 | `GET /api/folder-files?folder=X` | Files in a folder (sorted by mtime) |
-| `POST /api/classify` | Classify a PDF, returns ranked results |
+| `POST /api/classify` | Classify a PDF, returns ranked results + duplicates |
 | `POST /api/move` | Move PDF to folder (with optional rename) |
+| `POST /api/delete` | Delete a PDF from inbox |
+| `POST /api/log` | Log a client-side action (skip) to the console |
 | `POST /api/open-folder` | Open folder in system file manager |
 
 ## Storage
