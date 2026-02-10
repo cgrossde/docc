@@ -1,0 +1,14 @@
+{
+  "name": "docc",
+  "version": "1.0.0",
+  "description": "PDF classification CLI — learns from organized folders, classifies new PDFs",
+  "type": "module",
+  "bin": {
+    "docc": "./bin/docc.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.0.0",
+    "commander": "^14.0.0",
+    "unpdf": "^1.4.0"
+  }
+}
