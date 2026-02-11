@@ -9,16 +9,19 @@ Everything runs locally. No cloud APIs, no API keys.
 ## Project Structure
 
 ```
-bin/docc.js          CLI entry point (commander), wires up all 7 commands
+bin/docc.js          CLI entry point (commander), wires up all commands
 lib/
-  db.js              SQLite schema + query helpers, clearModel()
+  db.js              SQLite schema + query helpers, dual embeddings, clearModel()
   pdf.js             PDF text extraction
-  embedder.js        Ollama REST API client
+  embedder.js        Ollama embedding API client
   bayes.js           Naive Bayes classifier
   vectors.js         Cosine similarity, centroid math, duplicate detection
   classifier.js      Score fusion orchestrator
   folders.js         Recursive folder scanner
-  ui.js              Web UI server + inline SPA (classification, duplicate detection, compare view)
+  ui.js              Web UI server + inline SPA
+  llm.js             Ollama LLM generation client (qwen3:1.7b)
+  date.js            Date extraction (text regex, filename, mtime)
+  namer.js           Filename suggestion orchestrator
 data/
   docc.db            SQLite database (created at runtime, gitignored)
 ```
@@ -31,15 +34,18 @@ data/
 | **unpdf** | PDF text extraction (wraps PDF.js internally) |
 | **better-sqlite3** | Embedded SQLite — stores documents, embeddings, and classifier state |
 
-Ollama is called via native `fetch` against `http://localhost:11434/api/embed`. No SDK needed.
+Ollama is called via native `fetch` against `http://localhost:11434`. No SDK needed. Two endpoints are used: `/api/embed` for embeddings and `/api/generate` for LLM text generation.
 
 ## How Classification Works
 
 ### 1. Embedding Centroids
 
-Each document is embedded into a 768-dimensional vector using Ollama's `nomic-embed-text` model. For each folder/category, a **centroid** (element-wise mean of all document embeddings in that folder) is computed and stored.
+Each document is embedded into a 1024-dimensional vector using Ollama's `qwen3-embedding:0.6b` model. Two embeddings are stored per document:
 
-When classifying a new document, its embedding is compared against every centroid using **cosine similarity**. Folders are ranked by similarity score.
+- **Enriched embedding** (`embedding`) — text prepended with `[File: filename]` via `enrichText()`. Used for classification and centroid computation, since filenames carry strong category signal.
+- **Raw embedding** (`embedding_raw`) — content-only text, no filename metadata. Used for duplicate detection and name similarity matching, where filename differences between identical documents would cause false negatives.
+
+For each folder/category, a **centroid** (element-wise mean of all enriched embeddings in that folder) is computed and stored. When classifying a new document, its enriched embedding is compared against every centroid using **cosine similarity**. Folders are ranked by similarity score.
 
 This captures semantic meaning — documents about similar topics cluster together in vector space regardless of exact word choice or language.
 
@@ -72,7 +78,7 @@ RRF is rank-based rather than score-based, so it doesn't need calibration betwee
 
 ### 4. Duplicate Detection
 
-When classifying via the web UI, the inbox PDF's embedding (already computed for classification) is compared against all stored document embeddings using cosine similarity. Documents exceeding a **0.985 threshold** are flagged as likely duplicates — this catches OCR re-scans (which typically score 0.99+) while avoiding false positives from merely topically-similar documents.
+When classifying via the web UI, the inbox PDF's **raw embedding** (content-only, no filename enrichment) is compared against all stored documents' raw embeddings using cosine similarity. Documents exceeding a **0.985 threshold** are flagged as likely duplicates — this catches OCR re-scans (which typically score 0.99+) while avoiding false positives from merely topically-similar documents. Using raw embeddings ensures that two identical PDFs with different filenames are correctly identified as duplicates.
 
 Duplicates appear as a non-blocking hint above the classification suggestions. The user can compare documents side-by-side or delete the inbox copy directly.
 
@@ -86,6 +92,25 @@ The `test` command evaluates accuracy without a separate test set. For each docu
 4. The centroid and Bayes state are restored
 
 This gives an unbiased accuracy estimate since each document is never evaluated against a model that includes itself.
+
+### 6. Filename Suggestions
+
+After classification, docc suggests filenames in `YYYY-MM Name.pdf` format. This is handled by three modules:
+
+**Date extraction** (`date.js`) uses a waterfall strategy:
+1. PDF text (first 2000 chars) — regex patterns for DD.MM.YYYY, DD. Monat YYYY, Month DD YYYY, YYYY-MM-DD, MM/YYYY. Dates near keywords like "Datum", "Rechnungsdatum", "Issued" are preferred.
+2. Filename pattern — e.g. `20260210_Scan_*` → `2026-02` (scan date, month precision only).
+3. File mtime — fallback, month precision.
+
+**Name suggestions** (`namer.js`) combines two sources:
+- **Similarity matches** — the new document's raw embedding is compared against each document's raw embedding in the target folder. Matches above 0.97 cosine similarity contribute their name part (date prefix stripped). These appear first since they match existing naming conventions. Raw embeddings are used here so that filename differences don't suppress matches between content-identical documents.
+- **LLM generation** — `qwen3:1.7b` generates names to fill remaining slots (up to 5 total). The prompt includes example filenames from the folder and the first 3000 chars of document text. Post-processing strips dates/numbering, restores German umlauts (ae→ä, oe→ö, ue→ü), and converts ALL CAPS to title case.
+
+**LLM client** (`llm.js`) calls Ollama's `/api/generate` with `think: false` (qwen3 models default to thinking mode, which consumes all `num_predict` tokens for internal reasoning and returns an empty response). 15s timeout.
+
+In the CLI (`docc classify`), suggestions are shown synchronously below the results table. In the web UI, they load asynchronously via `POST /api/suggest-names` after classification completes, populating a dropdown on the rename input. Changing the selected folder triggers a new suggestion request.
+
+`docc test-names` evaluates suggestions against existing documents using leave-one-out (excluding each document from its folder's docs before generating suggestions).
 
 ## Configuration
 
@@ -120,6 +145,7 @@ Changing the root path when a learned model exists triggers a confirmation promp
 | `GET /api/folders` | All known folder categories |
 | `GET /api/folder-files?folder=X` | Files in a folder (sorted by mtime) |
 | `POST /api/classify` | Classify a PDF, returns ranked results + duplicates |
+| `POST /api/suggest-names` | Async filename suggestions for a classified PDF |
 | `POST /api/move` | Move PDF to folder (with optional rename) |
 | `POST /api/delete` | Delete a PDF from inbox |
 | `POST /api/log` | Log a client-side action (skip) to the console |
@@ -129,19 +155,15 @@ Changing the root path when a learned model exists triggers a confirmation promp
 
 All state lives in a single SQLite database (`data/docc.db`):
 
-- **documents** — path, folder category, extracted text, embedding (as `Float64Array` blob)
+- **documents** — path, folder category, extracted text, enriched embedding (`embedding` blob), raw content-only embedding (`embedding_raw` blob, nullable for legacy data)
 - **centroids** — pre-computed per-folder centroid embedding + document count
 - **bayes_state** — serialized classifier state (JSON blob, singleton row)
-- **meta** — key-value pairs (root directory path, inbox path)
+- **meta** — key-value pairs (root directory path, inbox path, embed_model)
 
-Embeddings are stored as raw `Float64Array` buffers (768 doubles = 6,144 bytes per document). SQLite with WAL mode handles concurrent reads efficiently.
+Embeddings are stored as `Float64Array` buffers (1024 doubles = 8,192 bytes each, two per document = ~16 KB). The `embedding_raw` column is added via `ALTER TABLE` on first access if missing, allowing seamless upgrades from older databases. Legacy rows with `NULL` raw embeddings fall back to the enriched embedding via `doc.embeddingRaw || doc.embedding`. SQLite with WAL mode handles concurrent reads efficiently.
 
-## Embedding Model
+## Models
 
-`nomic-embed-text` was chosen for its balance of quality and size:
+**Embedding: `qwen3-embedding:0.6b`** — 1024-dimensional vectors, 32K token context window. Progressive truncation at 24K/12K/4K chars on context overflow. ~640 MB download, runs fully offline via Ollama.
 
-- 768-dimensional vectors
-- ~0.5 GB RAM footprint
-- ~9,300 tokens/sec on Apple Silicon
-- Strong multilingual performance (German + English)
-- Runs fully offline via Ollama
+**Generation: `qwen3:1.7b`** — used for filename suggestions. Same Qwen family as the embedding model. ~1.4 GB download, generates in <2s. Strong multilingual support (German + English). Must be called with `think: false` to disable the default thinking mode.

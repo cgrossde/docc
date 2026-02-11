@@ -30,7 +30,8 @@ docc setup
 # Ollama installed.
 # Starting Ollama server...
 # Ollama server is running.
-# Pulling nomic-embed-text model (this may take a minute on first run)...
+# Pulling qwen3-embedding:0.6b model (this may take a minute on first run)...
+# Pulling qwen3:1.7b model for filename suggestions...
 #
 # ── Configuration ──
 #
@@ -42,7 +43,7 @@ docc setup
 # Setup complete. Run `docc learn` to index your documents.
 ```
 
-This will install Ollama (with confirmation), start the background server, download the `nomic-embed-text` embedding model (~275 MB), and prompt you to configure your document directory and inbox folder. If Ollama is already installed or the server is already running, those steps are skipped.
+This will install Ollama (with confirmation), start the background server, download the `qwen3-embedding:0.6b` embedding model (~640 MB) and the `qwen3:1.7b` generation model (~1.4 GB, used for filename suggestions), and prompt you to configure your document directory and inbox folder. If Ollama is already installed or the server is already running, those steps are skipped.
 
 ## Usage
 
@@ -96,6 +97,8 @@ docc learn ./my-documents  # or specify explicitly
 
 Subfolder names become categories. Nested folders work too (`Financial/Tax`). PDFs sitting directly in the root are skipped — they need a subfolder to define the category.
 
+Each document gets two embeddings: an **enriched** one (with filename metadata, used for classification) and a **raw** one (content-only, used for duplicate detection and name similarity). This means `learn` makes two embedding calls per PDF.
+
 Run `learn` again after adding new PDFs; already-indexed files are skipped automatically.
 
 ### Classify a new PDF
@@ -110,7 +113,14 @@ docc classify ./unsorted/mystery-document.pdf
 # 3.  Financial/Tax                0.15
 # 4.  Contracts                    0.11
 # 5.  Medical                      0.08
+#
+# Suggested names (date: 2024-03):
+#   1. 2024-03 Jahresrechnung.pdf  (similarity 98.3%)
+#   2. 2024-03 Rechnung.pdf  (llm)
+#   3. 2024-03 Monatsabrechnung.pdf  (llm)
 ```
+
+Filename suggestions combine two strategies: **similarity matching** (names from near-identical documents already in the target folder, compared using content-only embeddings) and **LLM generation** (via `qwen3:1.7b`). The date is extracted from the document text, filename, or file modification time.
 
 ### Test accuracy
 
@@ -135,6 +145,17 @@ docc test
 
 Each document is temporarily removed from the model, classified against the rest, then restored. This gives an honest estimate of real-world accuracy.
 
+### Test filename suggestions
+
+Evaluate how well the filename suggestion pipeline works against your existing documents:
+
+```bash
+docc test-names                    # test all folders
+docc test-names "Invoices/2024"    # test a specific folder
+```
+
+For each document, the tool uses its stored text and embedding to generate name suggestions (leave-one-out), then compares against the actual filename. Useful for tuning the LLM prompt, text limit, and similarity threshold.
+
 ### Interactive UI
 
 Start a web interface to classify PDFs from your inbox folder:
@@ -145,7 +166,7 @@ docc ui ./unsorted         # or specify a folder
 docc ui -p 8080            # custom port (default: 3141)
 ```
 
-The UI shows a PDF preview on the left and classification controls on the right. Each PDF gets top-4 ranked folder suggestions with confidence scores. If a near-duplicate of an already-filed document is detected, a warning appears above the suggestions with options to compare side-by-side or delete the inbox copy. The file list for each suggested folder is interactive — clicking any file opens a side-by-side compare view against the inbox PDF. You can navigate freely between PDFs, go back to already-handled documents, and see where they were filed. All actions are logged to the terminal.
+The UI shows a PDF preview on the left and classification controls on the right. Each PDF gets top-4 ranked folder suggestions with confidence scores. After classification, filename suggestions load asynchronously and populate a dropdown on the rename field — the first suggestion is auto-filled. Selecting a different folder triggers new name suggestions. If a near-duplicate of an already-filed document is detected (using content-only embeddings so identical PDFs with different filenames are correctly matched), a warning appears above the suggestions with options to compare side-by-side or delete the inbox copy. The file list for each suggested folder is interactive — clicking any file opens a side-by-side compare view against the inbox PDF. You can navigate freely between PDFs, go back to already-handled documents, and see where they were filed. All actions are logged to the terminal.
 
 **Keyboard shortcuts:**
 
@@ -174,3 +195,5 @@ docc reset
 ```
 
 Clears all learned data (documents, centroids, Bayes state) but keeps your configured paths. Run `learn` again to retrain.
+
+> **Upgrading from an older version?** If your database was created before dual embeddings were added, duplicate detection and name similarity will fall back to enriched embeddings. Run `docc reset && docc learn` to populate the raw embeddings for best results.

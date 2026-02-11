@@ -13,13 +13,15 @@ import {
   saveBayesState, loadBayesState,
   setMeta, getMeta, hasModel, clearModel,
 } from '../lib/db.js';
-import { extractPdfText } from '../lib/pdf.js';
-import { embed } from '../lib/embedder.js';
+import { extractPdfText, enrichText } from '../lib/pdf.js';
+import { embed, EMBED_MODEL } from '../lib/embedder.js';
 import { scanFolder } from '../lib/folders.js';
 import { NaiveBayes, tokenize } from '../lib/bayes.js';
 import { computeCentroid, adjustCentroidRemove } from '../lib/vectors.js';
 import { classifyDocument } from '../lib/classifier.js';
 import { startUiServer } from '../lib/ui.js';
+import { GENERATE_MODEL } from '../lib/llm.js';
+import { suggestFilenames } from '../lib/namer.js';
 
 const program = new Command();
 
@@ -89,6 +91,15 @@ async function waitForOllama(maxWaitMs = 15000) {
   return false;
 }
 
+function checkModelMismatch() {
+  const storedModel = getMeta('embed_model');
+  if (storedModel && storedModel !== EMBED_MODEL) {
+    console.error(`Error: Data was indexed with "${storedModel}" but current model is "${EMBED_MODEL}".`);
+    console.error('Run `docc reset` then `docc learn` to re-index with the new model.');
+    process.exit(1);
+  }
+}
+
 program
   .command('setup')
   .description('Install Ollama, start the server, and pull the embedding model')
@@ -131,11 +142,26 @@ program
     }
 
     // 3. Pull the embedding model
-    console.log('\nPulling nomic-embed-text model (this may take a minute on first run)...');
-    await run('ollama', ['pull', 'nomic-embed-text']);
+    console.log(`\nPulling ${EMBED_MODEL} model (this may take a minute on first run)...`);
+    await run('ollama', ['pull', EMBED_MODEL]);
 
-    // 4. Configure doc directory and inbox
+    // 3b. Pull the generation model for filename suggestions
+    console.log(`\nPulling ${GENERATE_MODEL} model for filename suggestions...`);
+    await run('ollama', ['pull', GENERATE_MODEL]);
+
+    // 4. Check for model mismatch with existing data
     getDb();
+    const storedModel = getMeta('embed_model');
+    if (storedModel && storedModel !== EMBED_MODEL && hasModel()) {
+      console.log(`\nWarning: Existing data was indexed with "${storedModel}" but current model is "${EMBED_MODEL}".`);
+      const clearYes = await confirm('Clear learned model and re-index? [y/N] ');
+      if (clearYes) {
+        clearModel();
+        console.log('Learned model cleared. Run `docc learn` to re-index.');
+      }
+    }
+
+    // 5. Configure doc directory and inbox
     const currentRoot = getMeta('root');
     const currentInbox = getMeta('inbox');
 
@@ -200,8 +226,10 @@ program
       // Show all config
       const root = getMeta('root');
       const inbox = getMeta('inbox');
+      const model = getMeta('embed_model');
       console.log(`root:  ${root || '(not set)'}`);
       console.log(`inbox: ${inbox || '(not set)'}`);
+      console.log(`model: ${model || '(not set)'} (current: ${EMBED_MODEL})`);
       return;
     }
 
@@ -269,8 +297,9 @@ program
       process.exit(1);
     }
 
-    // Initialize DB
+    // Initialize DB and check model compatibility
     getDb();
+    checkModelMismatch();
 
     // Load or create Bayes classifier
     const bayesJson = loadBayesState();
@@ -294,18 +323,22 @@ program
 
       try {
         // Extract text
-        const text = await extractPdfText(pdf.path);
-        if (!text || text.trim().length === 0) {
+        const rawText = await extractPdfText(pdf.path);
+        if (!rawText || rawText.trim().length === 0) {
           console.warn(`  Warning: No extractable text, skipping.`);
           skipped++;
           continue;
         }
 
-        // Embed
+        // Enrich with filename metadata
+        const text = enrichText(pdf.path, rawText);
+
+        // Embed both enriched (for classification) and raw (for duplicate detection + name similarity)
         const embedding = await embed(text);
+        const embeddingRaw = await embed(rawText);
 
         // Store in DB
-        insertDoc(pdf.path, pdf.folder, text, embedding);
+        insertDoc(pdf.path, pdf.folder, text, embedding, embeddingRaw);
 
         // Train Bayes
         const tokens = tokenize(text);
@@ -328,8 +361,9 @@ program
     // Save Bayes state
     saveBayesState(bayes.serialize());
 
-    // Save root path
+    // Save root path and model info
     setMeta('root', rootPath);
+    setMeta('embed_model', EMBED_MODEL);
 
     const successCount = processed - skipped;
     console.log(`\nLearned ${successCount} documents across ${folders.length} folders.`);
@@ -356,15 +390,18 @@ program
       console.error('Error: No model found. Run `docc learn <folder>` first.');
       process.exit(1);
     }
+    checkModelMismatch();
 
     // Extract and embed
-    const text = await extractPdfText(pdfPath);
-    if (!text || text.trim().length === 0) {
+    const rawText = await extractPdfText(pdfPath);
+    if (!rawText || rawText.trim().length === 0) {
       console.error('Error: No extractable text in this PDF.');
       process.exit(1);
     }
 
+    const text = enrichText(pdfPath, rawText);
     const embedding = await embed(text);
+    const embeddingRaw = await embed(rawText);
 
     // Load model
     const centroids = getAllCentroids();
@@ -389,6 +426,27 @@ program
       console.log(`${rank.padEnd(3)} ${folder} ${score}    ${cosine.padEnd(10)} ${bayes}`);
     });
     console.log('');
+
+    // Suggest filenames for the top folder
+    const topFolder = results[0]?.folder;
+    if (topFolder) {
+      const folderDocs = getDocsByFolder(topFolder);
+      console.log('Suggesting names...');
+      const nameStart = Date.now();
+      try {
+        const { suggestions, date } = await suggestFilenames(pdfPath, rawText, embeddingRaw, topFolder, folderDocs);
+        const elapsed = ((Date.now() - nameStart) / 1000).toFixed(1);
+        console.log(`Suggested names (date: ${date}, ${elapsed}s):`);
+        suggestions.forEach((s, i) => {
+          const sim = s.similarity ? ` ${(s.similarity * 100).toFixed(1)}%` : '';
+          console.log(`  ${i + 1}. ${s.name}  (${s.strategy}${sim})`);
+        });
+        console.log('');
+      } catch (err) {
+        const elapsed = ((Date.now() - nameStart) / 1000).toFixed(1);
+        console.log(`Name suggestion failed (${elapsed}s): ${err.message}\n`);
+      }
+    }
   });
 
 // ─── test ────────────────────────────────────────────────────────────────────
@@ -402,11 +460,22 @@ program
       console.error('Error: No model found. Run `docc learn <folder>` first.');
       process.exit(1);
     }
+    checkModelMismatch();
 
-    const docs = getAllDocs();
+    const allDocs = getAllDocs();
     const centroids = getAllCentroids();
     const bayesJson = loadBayesState();
     const bayes = NaiveBayes.deserialize(bayesJson);
+
+    // Skip documents without extractable text (not OCR'd or unreadable)
+    const readable = allDocs.filter(d => d.text && d.text.trim().length > 0);
+    const skippedNoText = allDocs.length - readable.length;
+
+    // Skip documents that are the only one in their folder (no centroid after removal)
+    const folderCounts = {};
+    for (const d of readable) folderCounts[d.folder] = (folderCounts[d.folder] || 0) + 1;
+    const docs = readable.filter(d => folderCounts[d.folder] > 1);
+    const skippedSingle = readable.length - docs.length;
 
     const centroidMap = {};
     for (const c of centroids) {
@@ -422,6 +491,13 @@ program
       perFolder[f] = { total: 0, top1: 0, top3: 0, top5: 0 };
     }
 
+    if (skippedNoText > 0) {
+      console.log(`Skipping ${skippedNoText} document${skippedNoText > 1 ? 's' : ''} with no extractable text.`);
+    }
+    if (skippedSingle > 0) {
+      console.log(`Skipping ${skippedSingle} document${skippedSingle > 1 ? 's' : ''} in single-document folders.`);
+    }
+    if (skippedNoText > 0 || skippedSingle > 0) console.log('');
     console.log(`Testing ${docs.length} documents across ${folders.length} folders...\n`);
 
     for (let i = 0; i < docs.length; i++) {
@@ -512,6 +588,104 @@ program
     console.log('');
   });
 
+// ─── test-names ─────────────────────────────────────────────────────────────
+
+program
+  .command('test-names')
+  .description('Test name suggestions against existing documents')
+  .argument('[folder]', 'Specific folder to test (default: all)')
+  .action(async (folder) => {
+    getDb();
+    if (!hasModel()) {
+      console.error('Error: No model found. Run `docc learn <folder>` first.');
+      process.exit(1);
+    }
+    checkModelMismatch();
+
+    const allDocs = getAllDocs();
+
+    // Filter to requested folder, or all
+    // Normalize to NFC for comparison (macOS paths are often NFD)
+    let testDocs = allDocs;
+    if (folder) {
+      const norm = folder.normalize('NFC');
+      testDocs = allDocs.filter(d => {
+        const df = d.folder.normalize('NFC');
+        return df === norm || df.startsWith(norm + '/');
+      });
+      if (testDocs.length === 0) {
+        console.error(`No documents found for folder: ${folder}`);
+        process.exit(1);
+      }
+    }
+
+    // Group by folder
+    const byFolder = {};
+    for (const doc of testDocs) {
+      if (!byFolder[doc.folder]) byFolder[doc.folder] = [];
+      byFolder[doc.folder].push(doc);
+    }
+
+    // Skip single-doc folders
+    const testFolders = Object.keys(byFolder).filter(f => byFolder[f].length > 1).sort();
+
+    let totalDocs = 0;
+    let matchCount = 0;
+
+    for (const f of testFolders) {
+      const docs = byFolder[f];
+      for (const doc of docs) {
+        totalDocs++;
+        const docFilename = doc.path.split('/').pop();
+        // Leave-one-out: exclude this doc from folderDocs
+        const folderDocs = docs.filter(d => d.id !== doc.id);
+
+        let result;
+        try {
+          result = await suggestFilenames(doc.path, doc.text, doc.embeddingRaw || doc.embedding, f, folderDocs);
+        } catch (err) {
+          console.log(`\nFolder: ${f}`);
+          console.log(`  Actual: ${docFilename}`);
+          console.log(`  Error:  ${err.message}`);
+          continue;
+        }
+
+        // Extract the name part of the actual filename for comparison
+        const actualName = docFilename.replace(/\.pdf$/i, '')
+          .replace(/^\d{4}-\d{2}(-\d{2})?\s+/, '').trim().toLowerCase();
+
+        // Check if any suggestion matches
+        let matchIdx = -1;
+        for (let i = 0; i < result.suggestions.length; i++) {
+          const sugName = result.suggestions[i].name.replace(/\.pdf$/i, '')
+            .replace(/^\d{4}-\d{2}(-\d{2})?\s+/, '').trim().toLowerCase();
+          if (sugName === actualName) {
+            matchIdx = i;
+            break;
+          }
+        }
+        if (matchIdx >= 0) matchCount++;
+
+        console.log(`\nFolder: ${f}`);
+        console.log(`  Actual: ${docFilename}`);
+        console.log(`  Date:   ${result.date}`);
+        result.suggestions.forEach((s, i) => {
+          const sim = s.similarity ? ` ${(s.similarity * 100).toFixed(1)}%` : '';
+          console.log(`  ${i + 1}. ${s.name.replace(/\.pdf$/i, '').padEnd(40)} (${s.strategy}${sim})`);
+        });
+        if (matchIdx >= 0) {
+          console.log(`  \u2713 Match: #${matchIdx + 1}`);
+        }
+
+        process.stdout.write(`\r  Tested ${totalDocs} docs...`);
+      }
+    }
+
+    console.log(`\n\n${'─'.repeat(40)}`);
+    console.log(`Name suggestion accuracy: ${matchCount}/${totalDocs} matched (${totalDocs > 0 ? (100 * matchCount / totalDocs).toFixed(1) : 0}%)`);
+    console.log('');
+  });
+
 // ─── ui ──────────────────────────────────────────────────────────────────────
 
 program
@@ -535,6 +709,7 @@ program
       console.error('Error: No model found. Run `docc learn <folder>` first.');
       process.exit(1);
     }
+    checkModelMismatch();
 
     const root = getMeta('root');
     if (!root) {
