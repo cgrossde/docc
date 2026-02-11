@@ -50,6 +50,7 @@ data/
 - `commander` v14 — CLI framework
 - `unpdf` v1.4 — PDF text extraction (wraps PDF.js)
 - `better-sqlite3` v12 — SQLite persistence
+- `simple-spellchecker` v1 — German spell-checking for LLM name suggestions
 - Ollama (local) — embedding via `POST /api/embed`, generation via `POST /api/generate`
 
 ## Important Patterns
@@ -72,7 +73,7 @@ data/
 - **`learn` and `ui` use stored paths** — `learn` falls back to stored `root`, `ui` falls back to stored `inbox` then cwd
 - **Filename suggestions** — `suggestFilenames()` in namer.js combines similarity-based name matching (>=0.97 cosine on raw embeddings against folder docs) with LLM-generated names (qwen3:1.7b) to suggest up to 5 filenames in `YYYY-MM Name.pdf` format
 - **Date extraction** — `extractDate()` in date.js uses a waterfall: PDF text regex (DE+EN patterns, keyword proximity) → filename pattern → file mtime
-- **LLM generation** — `generate()` in llm.js calls Ollama with `think: false` (qwen3 defaults to thinking mode which consumes all tokens). Post-processing in namer.js restores German umlauts (ae→ä, oe→ö, ue→ü) and fixes ALL CAPS to title case
+- **LLM generation** — `generate()` in llm.js calls Ollama with `think: false` (qwen3 defaults to thinking mode which consumes all tokens). Post-processing in namer.js spell-checks German words (`simple-spellchecker` de-DE dict) with umlaut fallback for compound words, fixes ALL CAPS to title case, filters names with >5 digits, and deduplicates
 - **Async name suggestions in UI** — `/api/suggest-names` endpoint is called after classification; results populate a dropdown on the rename input. Fires again on folder change
 
 ## Running
