@@ -12,6 +12,7 @@ import {
   upsertCentroid, getAllCentroids,
   saveBayesState, loadBayesState,
   setMeta, getMeta, hasModel, clearModel,
+  insertStat, getStatsByEvent,
 } from '../lib/db.js';
 import { extractPdfText, enrichText } from '../lib/pdf.js';
 import { embed, EMBED_MODEL } from '../lib/embedder.js';
@@ -301,6 +302,9 @@ program
     getDb();
     checkModelMismatch();
 
+    const isInitial = !hasModel();
+    const learnStart = Date.now();
+
     // Load or create Bayes classifier
     const bayesJson = loadBayesState();
     const bayes = bayesJson ? NaiveBayes.deserialize(bayesJson) : new NaiveBayes();
@@ -366,9 +370,18 @@ program
     setMeta('embed_model', EMBED_MODEL);
 
     const successCount = processed - skipped;
+    const learnDuration = Date.now() - learnStart;
     console.log(`\nLearned ${successCount} documents across ${folders.length} folders.`);
     if (skipped > 0) {
       console.log(`Skipped ${skipped} documents due to errors or empty text.`);
+    }
+
+    // Record learn stats
+    const totalDocs = getAllDocs().length;
+    if (isInitial) {
+      insertStat('learn', { type: 'initial', totalDocs, skipped, folders: folders.length, durationMs: learnDuration });
+    } else {
+      insertStat('learn', { type: 'update', newDocs: successCount, skipped, totalDocs, folders: folders.length, durationMs: learnDuration });
     }
   });
 
@@ -724,6 +737,139 @@ program
     }
 
     startUiServer(targetFolder, { port });
+  });
+
+// ─── stats ───────────────────────────────────────────────────────────────────
+
+program
+  .command('stats')
+  .description('Show usage statistics and classifier effectiveness')
+  .action(() => {
+    getDb();
+
+    const learns = getStatsByEvent('learn');
+    const classifies = getStatsByEvent('classify');
+    const names = getStatsByEvent('suggest-names');
+    const moves = getStatsByEvent('move');
+    const skips = getStatsByEvent('skip');
+    const deletes = getStatsByEvent('delete');
+
+    if (learns.length === 0 && classifies.length === 0 && moves.length === 0) {
+      console.log('No stats recorded yet. Use docc learn and docc ui to generate data.');
+      return;
+    }
+
+    // === Learn ===
+    if (learns.length > 0) {
+      console.log('=== Learn ===');
+      const initials = learns.filter(l => l.data.type === 'initial');
+      const updates = learns.filter(l => l.data.type === 'update');
+      for (const l of initials) {
+        console.log(`  Initial: ${l.data.totalDocs} docs, ${l.data.folders} folders, ${(l.data.durationMs / 1000).toFixed(1)}s`);
+      }
+      if (updates.length > 0) {
+        const avgMs = updates.reduce((s, l) => s + l.data.durationMs, 0) / updates.length;
+        const totalNew = updates.reduce((s, l) => s + (l.data.newDocs || 0), 0);
+        console.log(`  Updates: ${updates.length} runs, ${totalNew} new docs, avg ${(avgMs / 1000).toFixed(1)}s`);
+      }
+      console.log('');
+    }
+
+    // === Classification ===
+    if (classifies.length > 0) {
+      console.log('=== Classification ===');
+      const avgClassify = classifies.reduce((s, c) => s + c.data.durationMs, 0) / classifies.length;
+      const avgEmbed = classifies.reduce((s, c) => s + (c.data.embedDurationMs || 0), 0) / classifies.length;
+      console.log(`  Total classified: ${classifies.length}`);
+      console.log(`  Avg classify time: ${(avgClassify / 1000).toFixed(1)}s`);
+      console.log(`  Avg embed time: ${(avgEmbed / 1000).toFixed(1)}s`);
+      console.log('');
+    }
+
+    // === Name Suggestions ===
+    if (names.length > 0) {
+      console.log('=== Name Suggestions ===');
+      const avgName = names.reduce((s, n) => s + n.data.durationMs, 0) / names.length;
+      console.log(`  Total: ${names.length}`);
+      console.log(`  Avg time: ${(avgName / 1000).toFixed(1)}s`);
+      console.log('');
+    }
+
+    // === Inbox Outcomes ===
+    const totalOutcomes = moves.length + skips.length + deletes.length;
+    if (totalOutcomes > 0) {
+      console.log('=== Inbox Outcomes ===');
+      console.log(`  Total: ${totalOutcomes}`);
+      const pct = (n) => totalOutcomes > 0 ? (100 * n / totalOutcomes).toFixed(0) : '0';
+      console.log(`  Moved:   ${String(moves.length).padStart(4)} (${pct(moves.length)}%)`);
+      console.log(`  Skipped: ${String(skips.length).padStart(4)} (${pct(skips.length)}%)`);
+      console.log(`  Deleted: ${String(deletes.length).padStart(4)} (${pct(deletes.length)}%)`);
+      console.log('');
+    }
+
+    // === Suggestion Accuracy ===
+    const rankedMoves = moves.filter(m => m.data.chosenRank != null || m.data.wasManual);
+    if (rankedMoves.length > 0) {
+      console.log('=== Suggestion Accuracy ===');
+      const byRank = {};
+      let manualCount = 0;
+      for (const m of rankedMoves) {
+        if (m.data.wasManual) {
+          manualCount++;
+        } else {
+          const r = m.data.chosenRank;
+          byRank[r] = (byRank[r] || 0) + 1;
+        }
+      }
+      const total = rankedMoves.length;
+      const maxBar = 24;
+      const ranks = Object.keys(byRank).map(Number).sort((a, b) => a - b);
+      for (const r of ranks) {
+        const count = byRank[r];
+        const pct = (100 * count / total).toFixed(0);
+        const bar = '#'.repeat(Math.round(maxBar * count / total));
+        console.log(`  Suggestion #${r}  ${String(count).padStart(6)} (${pct.padStart(2)}%) ${bar}`);
+      }
+      if (manualCount > 0) {
+        const pct = (100 * manualCount / total).toFixed(0);
+        const bar = '#'.repeat(Math.round(maxBar * manualCount / total));
+        console.log(`  Manual (fuzzy) ${String(manualCount).padStart(4)} (${pct.padStart(2)}%) ${bar}`);
+      }
+      console.log('');
+    }
+
+    // === Method Effectiveness ===
+    const methodMoves = moves.filter(m => m.data.centroidRank != null && m.data.bayesRank != null);
+    if (methodMoves.length > 0) {
+      console.log('=== Method Effectiveness ===');
+      let embBetter = 0, bayesBetter = 0, tied = 0;
+      for (const m of methodMoves) {
+        if (m.data.centroidRank < m.data.bayesRank) embBetter++;
+        else if (m.data.bayesRank < m.data.centroidRank) bayesBetter++;
+        else tied++;
+      }
+      const total = methodMoves.length;
+      const pct = (n) => (100 * n / total).toFixed(0);
+      console.log(`  Embedding ranked higher: ${String(embBetter).padStart(4)} (${pct(embBetter)}%)`);
+      console.log(`  Bayes ranked higher:     ${String(bayesBetter).padStart(4)} (${pct(bayesBetter)}%)`);
+      console.log(`  Tied:                    ${String(tied).padStart(4)} (${pct(tied)}%)`);
+      console.log('');
+    }
+
+    // === Duplicates ===
+    const dupMoves = moves.filter(m => m.data.hadDuplicate);
+    const dupDeletes = deletes.filter(d => d.data.hadDuplicate);
+    const dupSkips = skips.filter(s => s.data.hadDuplicate);
+    const totalDup = dupMoves.length + dupDeletes.length + dupSkips.length;
+    if (totalDup > 0) {
+      console.log('=== Duplicates ===');
+      console.log(`  Detected: ${totalDup}`);
+      const pct = (n) => (100 * n / totalDup).toFixed(0);
+      console.log(`  Deleted:  ${String(dupDeletes.length).padStart(4)} (${pct(dupDeletes.length)}%)`);
+      console.log(`  Moved:    ${String(dupMoves.length).padStart(4)} (${pct(dupMoves.length)}%)`);
+      console.log(`  Skipped:  ${String(dupSkips.length).padStart(4)} (${pct(dupSkips.length)}%)`);
+      console.log('');
+    }
   });
 
 // ─── reset ───────────────────────────────────────────────────────────────────
