@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>docc — PDF Classifier</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header>
+  <h1>docc</h1>
+  <div class="progress" id="progress">
+    <button class="nav-btn" id="btnBack" onclick="window._goBack()" disabled>&larr;</button>
+    <span id="progressText"></span>
+    <button class="nav-btn" id="btnSkip" onclick="window._skip()">&rarr;</button>
+  </div>
+</header>
+
+<div class="toast-container" id="toastContainer"></div>
+
+<div class="main" id="main">
+  <div class="preview-pane" id="previewPane">
+    <div class="preview-placeholder">Loading...</div>
+  </div>
+  <div class="right-side">
+    <div class="control-pane" id="controlPane">
+      <div class="status-bar loading"><span class="spinner"></span> Loading PDF list...</div>
+    </div>
+  </div>
+</div>
+<div class="keyboard-hint" id="keyboardHint"></div>
+
+<script src="/app.js"></script>
+
+</body>
+</html>
