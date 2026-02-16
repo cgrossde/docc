@@ -11,9 +11,9 @@
 <header>
   <h1>docc</h1>
   <div class="progress" id="progress">
-    <button class="nav-btn" id="btnBack" onclick="window._goBack()" disabled>&larr;</button>
+    <button class="nav-btn" id="btnBack" data-action="go-back" disabled>&larr;</button>
     <span id="progressText"></span>
-    <button class="nav-btn" id="btnSkip" onclick="window._skip()">&rarr;</button>
+    <button class="nav-btn" id="btnSkip" data-action="skip">&rarr;</button>
   </div>
 </header>
 
@@ -31,7 +31,7 @@
 </div>
 <div class="keyboard-hint" id="keyboardHint"></div>
 
-<script src="/app.js"></script>
+<script type="module" src="/app.js"></script>
 
 </body>
 </html>

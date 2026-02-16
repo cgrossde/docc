@@ -37,7 +37,15 @@ lib/
   vectors.js         Cosine similarity, centroid math, leave-one-out adjustment, duplicate detection
   classifier.js      RRF score fusion, returns ranked results with per-method detail
   folders.js         Recursive folder scanner, skips root-level PDFs
-  ui.js              Web UI server + inline SPA (classification, duplicate detection, compare view, keyboard-driven)
+  ui.js              Web UI server (serves SPA + API endpoints)
+  ui/
+    index.html       SPA shell (type="module", data-action delegation)
+    style.css        All styles
+    app.js           Main SPA module: state, rendering, keyboard, event delegation
+    api.js           Fetch calls (classify, move, delete, suggest-names, etc.)
+    helpers.js       Pure utilities (escHtml, relTime, fuzzyMatch, debounce)
+    templates.js     Pure HTML template functions (no DOM access)
+    compare.js       Compare view (self-contained: state, render, keyboard)
   llm.js             Ollama LLM generation client (qwen3:1.7b, think:false)
   date.js            Date extraction from PDF text, filename, and mtime
   namer.js           Filename suggestion orchestrator (similarity + LLM)
@@ -75,6 +83,9 @@ data/
 - **Date extraction** — `extractDate()` in date.js uses a waterfall: PDF text regex (DE+EN patterns, keyword proximity) → filename pattern → file mtime
 - **LLM generation** — `generate()` in llm.js calls Ollama with `think: false` (qwen3 defaults to thinking mode which consumes all tokens). Post-processing in namer.js spell-checks German words (`simple-spellchecker` de-DE dict) with umlaut fallback for compound words, fixes ALL CAPS to title case, filters names with >5 digits, and deduplicates
 - **Async name suggestions in UI** — `/api/suggest-names` endpoint is called after classification; results populate a dropdown on the rename input. Fires again on folder change
+- **Web UI uses ES modules** — `app.js` is the entry point (`<script type="module">`), imports `api.js`, `helpers.js`, `templates.js`, `compare.js`. Event delegation on `#controlPane` (click/mousedown) and `<header>` (click) via `data-action` attributes eliminates `window._*` globals. Input-specific listeners (fuzzy search, rename) use `setupFuzzyDropdown()`/`setupRenameInput()` after innerHTML writes
+- **Debounced fuzzy input** — fuzzy folder search input is debounced (80ms) to avoid flickering on fast typing
+- **PDF prefetch** — after name suggestions complete for the current PDF, the next unhandled PDF is prefetched via `<link rel="prefetch">` to warm the browser cache
 
 ## Running
 

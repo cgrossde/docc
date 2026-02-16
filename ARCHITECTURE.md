@@ -18,7 +18,15 @@ lib/
   vectors.js         Cosine similarity, centroid math, duplicate detection
   classifier.js      Score fusion orchestrator
   folders.js         Recursive folder scanner
-  ui.js              Web UI server + inline SPA
+  ui.js              Web UI server (serves SPA + API endpoints)
+  ui/
+    index.html       SPA shell (type="module", data-action delegation)
+    style.css        All styles
+    app.js           Main SPA module: state, rendering, keyboard, event delegation
+    api.js           Fetch calls (classify, move, delete, suggest-names, etc.)
+    helpers.js       Pure utilities (escHtml, relTime, fuzzyMatch, debounce)
+    templates.js     Pure HTML template functions (no DOM access)
+    compare.js       Compare view (self-contained: state, render, keyboard)
   llm.js             Ollama LLM generation client (qwen3:1.7b)
   date.js            Date extraction (text regex, filename, mtime)
   namer.js           Filename suggestion orchestrator
@@ -123,7 +131,7 @@ Changing the root path when a learned model exists triggers a confirmation promp
 
 ## Web UI
 
-`docc ui` starts a local web server with an inline SPA for interactive batch classification. The UI is fully keyboard-driven for speed.
+`docc ui` starts a local web server with an ES module SPA for interactive batch classification. The UI is fully keyboard-driven for speed.
 
 **Layout:** PDF preview (left, 60%) + control pane (right, 40%) + full-width keyboard shortcut bar (bottom). Navigation buttons and progress counter live in the header bar.
 

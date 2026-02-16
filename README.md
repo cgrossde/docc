@@ -13,7 +13,7 @@ Point it at your organized documents, run `docc learn`, and it picks up the patt
 - **Manual fallback** — fuzzy folder search lets you quickly pick any folder when suggestions don't match
 - **Measures its own accuracy** — built-in leave-one-out cross-validation (`docc test`) on your real data
 
-**Disclaimer:** Actual implementation of the project was mostly done with claude code. I'm happy with the result but the UI part is currently not very maintainable for mere humans (as it's all in a single file 😅)
+**Disclaimer:** Actual implementation of the project was mostly done with claude code.
 
 ## Web UI
 
