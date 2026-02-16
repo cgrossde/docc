@@ -9,7 +9,14 @@
 <body>
 
 <header>
-  <h1>docc</h1>
+  <div class="header-left">
+    <button class="burger-btn" data-action="toggle-menu">&#9776;</button>
+    <h1>docc</h1>
+    <div class="burger-menu" id="burgerMenu">
+      <button class="burger-item" data-action="nav-classify">Classify</button>
+      <button class="burger-item" data-action="nav-stats">Stats</button>
+    </div>
+  </div>
   <div class="progress" id="progress">
     <button class="nav-btn" id="btnBack" data-action="go-back" disabled>&larr;</button>
     <span id="progressText"></span>
