@@ -61,6 +61,7 @@ Commands:
   test                   Leave-one-out cross-validation on the learned model
   test-names [folder]    Test name suggestions against existing documents
   ui [options] [folder]  Open a web UI to classify PDFs from a folder
+  stats                  Show usage statistics and classifier effectiveness
   reset                  Clear the learned model (keeps configuration)
   help [command]         display help for command
 ```
@@ -81,6 +82,10 @@ Suggested names (date: 2024-03, 1.8s):
   2. 2024-03 Rechnung.pdf  (llm)
   3. 2024-03 Monatsabrechnung.pdf  (llm)
 ```
+
+**View usage statistics:**
+
+`docc stats` shows how the classifier is performing in practice: total documents classified, average processing times, inbox outcomes (moved/skipped/deleted), and a breakdown of which suggestion rank was chosen — so you can see how often the top suggestion was right. The same stats are also available as a dashboard in the web UI via the burger menu.
 
 **Test accuracy on your data:**
 

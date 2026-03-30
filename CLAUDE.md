@@ -14,6 +14,7 @@ docc classify <pdf>     # Classify a single PDF, show ranked folders + name sugg
 docc test               # Leave-one-out cross-validation accuracy report
 docc test-names [folder] # Evaluate filename suggestions against existing documents
 docc ui [folder]        # Web UI to classify PDFs (default: configured inbox or cwd)
+docc stats              # Show usage statistics and classifier effectiveness
 docc reset              # Clear learned model (preserves configuration)
 ```
 

@@ -8,9 +8,9 @@ import { createInterface } from 'node:readline';
 
 import {
   getDb, DB_PATH,
-  insertDoc, docExists, getAllDocs, getDocsByFolder,
-  upsertCentroid, getAllCentroids,
-  saveBayesState, loadBayesState,
+  getAllDocs, getDocsByFolder,
+  getAllCentroids,
+  loadBayesState,
   setMeta, getMeta, hasModel, clearModel,
   insertStat, getStatsByEvent,
 } from '../lib/db.js';
@@ -18,9 +18,10 @@ import { extractPdfText, enrichText } from '../lib/pdf.js';
 import { embed, EMBED_MODEL } from '../lib/embedder.js';
 import { scanFolder } from '../lib/folders.js';
 import { NaiveBayes, tokenize } from '../lib/bayes.js';
-import { computeCentroid, adjustCentroidRemove } from '../lib/vectors.js';
+import { adjustCentroidRemove } from '../lib/vectors.js';
 import { classifyDocument } from '../lib/classifier.js';
 import { startUiServer } from '../lib/ui.js';
+import { learnPdfs } from '../lib/learn.js';
 import { GENERATE_MODEL } from '../lib/llm.js';
 import { suggestFilenames } from '../lib/namer.js';
 
@@ -302,86 +303,15 @@ program
     getDb();
     checkModelMismatch();
 
-    const isInitial = !hasModel();
-    const learnStart = Date.now();
-
-    // Load or create Bayes classifier
-    const bayesJson = loadBayesState();
-    const bayes = bayesJson ? NaiveBayes.deserialize(bayesJson) : new NaiveBayes();
-
-    // Filter out already-indexed PDFs
-    const newPdfs = pdfs.filter(p => !docExists(p.path));
-    if (newPdfs.length === 0) {
-      console.log(`All ${pdfs.length} PDFs already indexed. Nothing to do.`);
+    const result = await learnPdfs(rootPath, { verbose: true });
+    if (!result) {
+      console.log(`All PDFs already indexed. Nothing to do.`);
       return;
     }
 
-    console.log(`Found ${pdfs.length} PDFs, ${newPdfs.length} new to process.`);
-
-    let processed = 0;
-    let skipped = 0;
-
-    for (const pdf of newPdfs) {
-      processed++;
-      console.log(`Processing ${processed}/${newPdfs.length}: ${pdf.folder}/${pdf.path.split('/').pop()}`);
-
-      try {
-        // Extract text
-        const rawText = await extractPdfText(pdf.path);
-        if (!rawText || rawText.trim().length === 0) {
-          console.warn(`  Warning: No extractable text, skipping.`);
-          skipped++;
-          continue;
-        }
-
-        // Enrich with filename metadata
-        const text = enrichText(pdf.path, rawText);
-
-        // Embed both enriched (for classification) and raw (for duplicate detection + name similarity)
-        const embedding = await embed(text);
-        const embeddingRaw = await embed(rawText);
-
-        // Store in DB
-        insertDoc(pdf.path, pdf.folder, text, embedding, embeddingRaw);
-
-        // Train Bayes
-        const tokens = tokenize(text);
-        bayes.train(tokens, pdf.folder);
-      } catch (err) {
-        console.error(`  Error processing: ${err.message}`);
-        skipped++;
-      }
-    }
-
-    // Compute centroids per folder
-    const folders = [...new Set(pdfs.map(p => p.folder))];
-    for (const f of folders) {
-      const docs = getDocsByFolder(f);
-      if (docs.length === 0) continue;
-      const centroid = computeCentroid(docs.map(d => d.embedding));
-      upsertCentroid(f, centroid, docs.length);
-    }
-
-    // Save Bayes state
-    saveBayesState(bayes.serialize());
-
-    // Save root path and model info
-    setMeta('root', rootPath);
-    setMeta('embed_model', EMBED_MODEL);
-
-    const successCount = processed - skipped;
-    const learnDuration = Date.now() - learnStart;
-    console.log(`\nLearned ${successCount} documents across ${folders.length} folders.`);
-    if (skipped > 0) {
-      console.log(`Skipped ${skipped} documents due to errors or empty text.`);
-    }
-
-    // Record learn stats
-    const totalDocs = getAllDocs().length;
-    if (isInitial) {
-      insertStat('learn', { type: 'initial', totalDocs, skipped, folders: folders.length, durationMs: learnDuration });
-    } else {
-      insertStat('learn', { type: 'update', newDocs: successCount, skipped, totalDocs, folders: folders.length, durationMs: learnDuration });
+    console.log(`\nLearned ${result.newDocs} documents across ${result.folders.length} folders.`);
+    if (result.skipped > 0) {
+      console.log(`Skipped ${result.skipped} documents due to errors or empty text.`);
     }
   });
 
