@@ -13,9 +13,10 @@ import {
   loadBayesState,
   setMeta, getMeta, hasModel, clearModel,
   insertStat, getStatsByEvent,
+  assertModelCompatible,
 } from '../lib/db.js';
 import { extractPdfText, enrichText } from '../lib/pdf.js';
-import { embed, EMBED_MODEL } from '../lib/embedder.js';
+import { embed, EMBED_MODEL, checkOllama } from '../lib/embedder.js';
 import { scanFolder } from '../lib/folders.js';
 import { NaiveBayes, tokenize } from '../lib/bayes.js';
 import { adjustCentroidRemove } from '../lib/vectors.js';
@@ -75,29 +76,20 @@ function run(cmd, args, { label } = {}) {
   });
 }
 
-async function ollamaIsServing() {
-  try {
-    const res = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(2000) });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}
-
 async function waitForOllama(maxWaitMs = 15000) {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
-    if (await ollamaIsServing()) return true;
+    if (await checkOllama()) return true;
     await new Promise(r => setTimeout(r, 500));
   }
   return false;
 }
 
 function checkModelMismatch() {
-  const storedModel = getMeta('embed_model');
-  if (storedModel && storedModel !== EMBED_MODEL) {
-    console.error(`Error: Data was indexed with "${storedModel}" but current model is "${EMBED_MODEL}".`);
-    console.error('Run `docc reset` then `docc learn` to re-index with the new model.');
+  try {
+    assertModelCompatible(EMBED_MODEL);
+  } catch (err) {
+    console.error('Error:', err.message);
     process.exit(1);
   }
 }
@@ -124,7 +116,7 @@ program
     }
 
     // 2. Start server if not running
-    if (await ollamaIsServing()) {
+    if (await checkOllama()) {
       console.log('Ollama server is already running.');
     } else {
       console.log('Starting Ollama server...');
@@ -334,6 +326,11 @@ program
       process.exit(1);
     }
     checkModelMismatch();
+
+    if (!await checkOllama()) {
+      console.error('Error: Cannot connect to Ollama. Is it running? (ollama serve)');
+      process.exit(1);
+    }
 
     // Extract and embed
     const rawText = await extractPdfText(pdfPath);
@@ -653,6 +650,11 @@ program
       process.exit(1);
     }
     checkModelMismatch();
+
+    if (!await checkOllama()) {
+      console.error('Error: Cannot connect to Ollama. Is it running? (ollama serve)');
+      process.exit(1);
+    }
 
     const root = getMeta('root');
     if (!root) {

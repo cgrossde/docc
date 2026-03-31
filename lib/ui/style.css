@@ -162,8 +162,8 @@
   .suggestions { display: flex; flex-direction: column; gap: 8px; }
   .suggestion-btn {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
+    align-items: flex-start;
+    gap: 6px;
     padding: 12px 16px;
     border: 2px solid #ddd;
     border-radius: 8px;
@@ -176,11 +176,14 @@
     border-color: #4361ee;
     background: #f0f4ff;
   }
-  .suggestion-btn .folder-name { font-weight: 500; }
+  .suggestion-btn .suggestion-num { font-weight: 500; flex-shrink: 0; min-width: 20px; }
+  .suggestion-btn .folder-name { font-weight: 500; flex: 1; word-break: break-word; }
   .suggestion-btn .score {
     font-size: 12px;
     color: #888;
     font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+    padding-top: 1px;
   }
   .suggestion-btn.selected {
     border-color: #4361ee;
