@@ -3,7 +3,6 @@
 import { Command } from 'commander';
 import { resolve } from 'node:path';
 import { existsSync, unlinkSync } from 'node:fs';
-import { execSync, spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
 import {
@@ -16,14 +15,14 @@ import {
   assertModelCompatible,
 } from '../lib/db.js';
 import { extractPdfText, enrichText } from '../lib/pdf.js';
-import { embed, EMBED_MODEL, checkOllama } from '../lib/embedder.js';
+import { embed } from '../lib/embedder.js';
+import { ensureOllama, ensureModels, registerOllamaCleanup, EMBED_MODEL } from '../lib/ollama.js';
 import { scanFolder } from '../lib/folders.js';
 import { NaiveBayes, tokenize } from '../lib/bayes.js';
 import { adjustCentroidRemove } from '../lib/vectors.js';
 import { classifyDocument } from '../lib/classifier.js';
 import { startUiServer } from '../lib/ui.js';
 import { learnPdfs } from '../lib/learn.js';
-import { GENERATE_MODEL } from '../lib/llm.js';
 import { suggestFilenames } from '../lib/namer.js';
 
 const program = new Command();
@@ -34,15 +33,6 @@ program
   .version('1.0.0');
 
 // ─── setup ───────────────────────────────────────────────────────────────────
-
-function commandExists(cmd) {
-  try {
-    execSync(`which ${cmd}`, { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 function confirm(question) {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -64,27 +54,6 @@ function prompt(question, defaultValue) {
   });
 }
 
-function run(cmd, args, { label } = {}) {
-  return new Promise((res, reject) => {
-    if (label) console.log(label);
-    const child = spawn(cmd, args, { stdio: 'inherit' });
-    child.on('close', (code) => {
-      if (code === 0) res();
-      else reject(new Error(`${cmd} ${args.join(' ')} exited with code ${code}`));
-    });
-    child.on('error', reject);
-  });
-}
-
-async function waitForOllama(maxWaitMs = 15000) {
-  const start = Date.now();
-  while (Date.now() - start < maxWaitMs) {
-    if (await checkOllama()) return true;
-    await new Promise(r => setTimeout(r, 500));
-  }
-  return false;
-}
-
 function checkModelMismatch() {
   try {
     assertModelCompatible(EMBED_MODEL);
@@ -98,52 +67,13 @@ program
   .command('setup')
   .description('Install Ollama, start the server, and pull the embedding model')
   .action(async () => {
-    // 1. Check / install Ollama
-    if (commandExists('ollama')) {
-      console.log('Ollama is already installed.');
-    } else {
-      if (!commandExists('brew')) {
-        console.error('Error: Homebrew is required to install Ollama. Install it from https://brew.sh');
-        process.exit(1);
-      }
-      const yes = await confirm('Ollama is not installed. Install via Homebrew? [y/N] ');
-      if (!yes) {
-        console.log('Setup cancelled.');
-        return;
-      }
-      await run('brew', ['install', 'ollama'], { label: '\nInstalling Ollama...' });
-      console.log('Ollama installed.');
-    }
+    // 1. Ensure Ollama is installed and running (leave it running after setup exits)
+    await ensureOllama();
 
-    // 2. Start server if not running
-    if (await checkOllama()) {
-      console.log('Ollama server is already running.');
-    } else {
-      console.log('Starting Ollama server...');
-      // Detach so it keeps running after docc exits
-      const child = spawn('ollama', ['serve'], {
-        stdio: 'ignore',
-        detached: true,
-      });
-      child.unref();
+    // 2. Ensure models are downloaded
+    await ensureModels();
 
-      if (await waitForOllama()) {
-        console.log('Ollama server is running.');
-      } else {
-        console.error('Error: Ollama server did not start in time. Try running `ollama serve` manually.');
-        process.exit(1);
-      }
-    }
-
-    // 3. Pull the embedding model
-    console.log(`\nPulling ${EMBED_MODEL} model (this may take a minute on first run)...`);
-    await run('ollama', ['pull', EMBED_MODEL]);
-
-    // 3b. Pull the generation model for filename suggestions
-    console.log(`\nPulling ${GENERATE_MODEL} model for filename suggestions...`);
-    await run('ollama', ['pull', GENERATE_MODEL]);
-
-    // 4. Check for model mismatch with existing data
+    // 3. Check for model mismatch with existing data
     getDb();
     const storedModel = getMeta('embed_model');
     if (storedModel && storedModel !== EMBED_MODEL && hasModel()) {
@@ -155,7 +85,7 @@ program
       }
     }
 
-    // 5. Configure doc directory and inbox
+    // 3b. Configure doc directory and inbox
     const currentRoot = getMeta('root');
     const currentInbox = getMeta('inbox');
 
@@ -269,6 +199,10 @@ program
   .description('Learn from an organized folder of PDFs')
   .argument('[folder]', 'Root folder containing categorized PDFs in subfolders (default: configured root)')
   .action(async (folder) => {
+    const ollamaProc = await ensureOllama();
+    await ensureModels();
+    registerOllamaCleanup(ollamaProc);
+
     if (!folder) {
       getDb();
       const storedRoot = getMeta('root');
@@ -327,10 +261,9 @@ program
     }
     checkModelMismatch();
 
-    if (!await checkOllama()) {
-      console.error('Error: Cannot connect to Ollama. Is it running? (ollama serve)');
-      process.exit(1);
-    }
+    const ollamaProc = await ensureOllama();
+    await ensureModels();
+    registerOllamaCleanup(ollamaProc);
 
     // Extract and embed
     const rawText = await extractPdfText(pdfPath);
@@ -542,6 +475,10 @@ program
     }
     checkModelMismatch();
 
+    const ollamaProc = await ensureOllama();
+    await ensureModels();
+    registerOllamaCleanup(ollamaProc);
+
     const allDocs = getAllDocs();
 
     // Filter to requested folder, or all
@@ -651,10 +588,9 @@ program
     }
     checkModelMismatch();
 
-    if (!await checkOllama()) {
-      console.error('Error: Cannot connect to Ollama. Is it running? (ollama serve)');
-      process.exit(1);
-    }
+    const ollamaProc = await ensureOllama();
+    await ensureModels();
+    registerOllamaCleanup(ollamaProc);
 
     const root = getMeta('root');
     if (!root) {
